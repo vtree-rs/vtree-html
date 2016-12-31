@@ -1,0 +1,14 @@
+[package]
+authors = ["Thomas Heck <t@b128.net>"]
+name = "html-test"
+version = "0.1.0"
+
+[dependencies.vtree-html]
+path = ".."
+
+[dependencies.vtree]
+path = "../../vtree/vtree"
+
+[profile.release]
+lto = true
+panic = "abort"
