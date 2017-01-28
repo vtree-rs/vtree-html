@@ -14,9 +14,8 @@ extern "C" {
 #[repr(u32)]
 #[derive(Debug)]
 enum FFINodeType {
-    Text = 0,
-    Div = 1,
-    Span = 2,
+    Div = 0,
+    Span = 1,
 }
 
 #[repr(u32)]
@@ -27,6 +26,23 @@ enum FFIDiffTag {
     ParamSet = 3,
     ParamSetToTrue = 4,
     ParamRemoved = 5,
+    TextAdded = 6,
+    TextSet = 7,
+}
+
+#[repr(C)]
+struct FFIString {
+    ptr: *const u8,
+    len: usize,
+}
+
+impl FFIString {
+    fn new(s: &str) -> FFIString {
+        FFIString {
+            ptr: s.as_ptr(),
+            len: s.len(),
+        }
+    }
 }
 
 #[repr(C)]
@@ -36,8 +52,6 @@ struct FFIDiffAdded {
     index: usize,
 }
 
-// no need for "FFIDiffRemoved"
-
 #[repr(C)]
 struct FFIDiffReordered {
     last_index: usize,
@@ -46,32 +60,26 @@ struct FFIDiffReordered {
 
 #[repr(C)]
 struct FFIDiffParamSet {
-    key: *const u8,
-    key_len: usize,
-    value: *const u8,
-    value_len: usize,
+    key: FFIString,
+    value: FFIString,
 }
 
 #[repr(C)]
-struct FFIDiffParamSetToTrue {
-    key: *const u8,
-    key_len: usize,
-}
-
-#[repr(C)]
-struct FFIDiffParamRemoved {
-    key: *const u8,
-    key_len: usize,
+struct FFIDiffTextAdded {
+    id_parent: usize,
+    index: usize,
+    text: FFIString,
 }
 
 #[repr(C)]
 union FFIDiffUnion {
     added: FFIDiffAdded,
-    // no need for "removed"
     reordered: FFIDiffReordered,
     param_set: FFIDiffParamSet,
-    param_set_to_true: FFIDiffParamSetToTrue,
-    param_removed: FFIDiffParamRemoved,
+    param_set_to_true: FFIString,
+    param_removed: FFIString,
+    text_added: FFIDiffTextAdded,
+    text_set: FFIString,
 }
 
 #[repr(C)]
@@ -110,7 +118,6 @@ impl<'a> DifferData<'a> {
 
     fn create_id_for_path(&mut self, path: &diff::Path) -> usize {
         let id = self.get_next_id();
-        println!("create id for path: {} id: {}", path, id);
         self.state.node_ids.insert(path.clone(), id);
         id
     }
@@ -145,11 +152,9 @@ fn param_to_ffi(id: usize, key: &str, value: &nodes::ParamValue, remove_false: b
                 FFIDiffTag::ParamSet,
                 FFIDiffUnion {
                     param_set: FFIDiffParamSet {
-                        key: key.as_ptr(),
-                        key_len: key.len(),
-                        value: v.as_ptr(),
-                        value_len: v.len(),
-                    }
+                        key: FFIString::new(key),
+                        value: FFIString::new(v),
+                    },
                 },
             )
         }
@@ -158,11 +163,9 @@ fn param_to_ffi(id: usize, key: &str, value: &nodes::ParamValue, remove_false: b
                 FFIDiffTag::ParamSet,
                 FFIDiffUnion {
                     param_set: FFIDiffParamSet {
-                        key: key.as_ptr(),
-                        key_len: key.len(),
-                        value: v.as_ptr(),
-                        value_len: v.len(),
-                    }
+                        key: FFIString::new(key),
+                        value: FFIString::new(v),
+                    },
                 },
             )
         }
@@ -175,20 +178,14 @@ fn param_to_ffi(id: usize, key: &str, value: &nodes::ParamValue, remove_false: b
                 (
                     FFIDiffTag::ParamRemoved,
                     FFIDiffUnion {
-                        param_set_to_true: FFIDiffParamSetToTrue {
-                            key: key.as_ptr(),
-                            key_len: key.len(),
-                        }
+                        param_set_to_true: FFIString::new(key),
                     },
                 )
             } else {
                 (
                     FFIDiffTag::ParamSetToTrue,
                     FFIDiffUnion {
-                        param_set_to_true: FFIDiffParamSetToTrue {
-                            key: key.as_ptr(),
-                            key_len: key.len(),
-                        }
+                        param_set_to_true: FFIString::new(key),
                     },
                 )
             }
@@ -227,27 +224,13 @@ fn add_added_to_diffs(data: &mut DifferData, curr: &AllNodes, id: usize, path: &
     if let &AllNodes::Text(nodes::Text { ref params }) = curr {
         data.diffs.push(FFIDiff {
             id: id,
-            tag: FFIDiffTag::Added,
+            tag: FFIDiffTag::TextAdded,
             u: FFIDiffUnion {
-                added: FFIDiffAdded {
+                text_added: FFIDiffTextAdded {
                     id_parent: id_parent,
-                    ty: FFINodeType::Text,
                     index: index,
-                }
-            },
-        });
-
-        let key = "contents";
-        data.diffs.push(FFIDiff {
-            id: id,
-            tag: FFIDiffTag::ParamSet,
-            u: FFIDiffUnion {
-                param_set: FFIDiffParamSet {
-                    key: key.as_ptr(),
-                    key_len: key.len(),
-                    value: params.as_ptr(),
-                    value_len: params.len(),
-                }
+                    text: FFIString::new(params),
+                },
             },
         });
         return;
@@ -267,7 +250,7 @@ fn add_added_to_diffs(data: &mut DifferData, curr: &AllNodes, id: usize, path: &
                 id_parent: id_parent,
                 ty: ty,
                 index: index,
-            }
+            },
         },
     });
     data.diffs.extend(params_to_ffi(id, params, false));
@@ -291,7 +274,6 @@ impl<'a, 'b> diff::Differ<'a, AllNodes> for Differ<'b> {
             Diff::Removed {ref last, ..} => {
                 last.visit_exit(path, 0, &mut |path, _, _| {
                     let id = data.state.node_ids.remove(path).unwrap();
-                    println!("rm path: {} id: {:?}", path, id);
                     data.diffs.push(FFIDiff {
                         id: id,
                         tag: FFIDiffTag::Removed,
@@ -302,7 +284,6 @@ impl<'a, 'b> diff::Differ<'a, AllNodes> for Differ<'b> {
             Diff::Replaced {ref curr, ref last, index} => {
                 last.visit_exit(path, 0, &mut |path, _, _| {
                     let id = data.state.node_ids.remove(path);
-                    println!("rm path: {} id: {:?}", path, id);
                     let id = if let Some(id) = id {
                         id
                     } else {
@@ -347,10 +328,7 @@ impl<'a, 'b> diff::Differ<'a, AllNodes> for Differ<'b> {
                                     id: id,
                                     tag: FFIDiffTag::ParamRemoved,
                                     u: FFIDiffUnion {
-                                        param_set_to_true: FFIDiffParamSetToTrue {
-                                            key: key.as_ptr(),
-                                            key_len: key.len(),
-                                        }
+                                        param_set_to_true: FFIString::new(key),
                                     },
                                 });
                             }
@@ -361,17 +339,11 @@ impl<'a, 'b> diff::Differ<'a, AllNodes> for Differ<'b> {
                         &AllNodes::Text(_),
                     ) => {
                         let id = data.get_id_for_path(path);
-                        let key = "contents";
                         data.diffs.push(FFIDiff {
                             id: id,
-                            tag: FFIDiffTag::ParamSet,
+                            tag: FFIDiffTag::TextSet,
                             u: FFIDiffUnion {
-                                param_set: FFIDiffParamSet {
-                                    key: key.as_ptr(),
-                                    key_len: key.len(),
-                                    value: curr.as_ptr(),
-                                    value_len: curr.len(),
-                                }
+                                text_set: FFIString::new(curr),
                             },
                         });
                     }

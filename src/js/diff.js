@@ -1,4 +1,4 @@
-import {utf8ToString} from './utils.js';
+import {ptrToPtrLenToString} from './utils.js';
 import {contexts, idToTagName} from './api.js';
 
 function added(ctx, nodeId, ptr) {
@@ -6,30 +6,14 @@ function added(ctx, nodeId, ptr) {
 	const ty = getValue(ptr + 4, 'i32');
 	const index = getValue(ptr + 8, 'i32');
 
-	console.log('added - nodeId:', nodeId, 'idParent:', idParent, 'ty:', ty, 'index:', index);
-
-	let elem;
-	if (ty === 0) {
-		elem = window.document.createTextNode('');
-	} else {
-		elem = window.document.createElement(idToTagName[ty]);
-	}
-	const parentElem = idParent === 0 ? ctx.rootNode : ctx.nodes[idParent].elem;
-	ctx.nodes[nodeId] = {
-		elem: elem,
-		type: ty,
-	};
-	if (parentElem.childNodes.length < index) {
-		parentElem.appendChild(elem);
-	} else {
-		parentElem.insertBefore(elem, parentElem.childNodes[index]);
-	}
+	const elem = window.document.createElement(idToTagName[ty]);
+	const parentElem = idParent === 0 ? ctx.rootNode : ctx.nodes[idParent];
+	ctx.nodes[nodeId] = elem;
+	parentElem.insertBefore(elem, parentElem.childNodes[index] || null);
 }
 
 function removed(ctx, nodeId, ptr) {
-	console.log('removed - nodeId:', nodeId);
-	if (!ctx.nodes[nodeId]) return;
-	const elem = ctx.nodes[nodeId].elem;
+	const elem = ctx.nodes[nodeId];
 	elem.parentNode.removeChild(elem);
 	delete ctx.nodes[nodeId];
 }
@@ -40,47 +24,42 @@ function reordered(ctx, nodeId, ptr) {
 }
 
 function paramSet(ctx, nodeId, ptr) {
-	const valPtr = getValue(ptr + 8, '*');
-	const valLen = getValue(ptr + 12, 'i32');
-	const val = utf8ToString(valPtr, valLen);
+	const key = ptrToPtrLenToString(ptr);
+	const val = ptrToPtrLenToString(ptr + 8);
 
-	console.log('paramSet - nodeId:', nodeId, 'val:', val);
-
-	const node = ctx.nodes[nodeId];
-	if (node.type === 0) {
-		node.elem.nodeValue = val;
-	} else {
-		const keyPtr = getValue(ptr, '*');
-		const keyLen = getValue(ptr + 4, 'i32');
-		const key = utf8ToString(keyPtr, keyLen);
-
-		node.elem.setAttribute(key, val);
-	}
+	ctx.nodes[nodeId].setAttribute(key, val);
 }
 
 function paramSetToTrue(ctx, nodeId, ptr) {
-	const keyPtr = getValue(ptr, '*');
-	const keyLen = getValue(ptr + 4, 'i32');
-	const key = utf8ToString(keyPtr, keyLen);
+	const key = ptrToPtrLenToString(ptr);
 
-	const node = ctx.nodes[nodeId];
-	if (node.type === 0) throw new Error('illegal node type "text"');
-	node.elem.setAttribute(key, key);
+	ctx.nodes[nodeId].setAttribute(key, key);
 }
 
 function paramRemoved(ctx, nodeId, ptr) {
-	const keyPtr = getValue(ptr, '*');
-	const keyLen = getValue(ptr + 4, 'i32');
-	const key = utf8ToString(keyPtr, keyLen);
+	const key = ptrToPtrLenToString(ptr);
 
-	const node = ctx.nodes[nodeId];
-	if (node.type === 0) throw new Error('illegal node type "text"');
-	node.elem.removeAttribute(key);
+	ctx.nodes[nodeId].removeAttribute(key);
+}
+
+function textAdded(ctx, nodeId, ptr) {
+	const idParent = getValue(ptr, 'i32');
+	const index = getValue(ptr + 4, 'i32');
+	const text = ptrToPtrLenToString(ptr + 8);
+
+	const elem = window.document.createTextNode(text);
+	const parentElem = idParent === 0 ? ctx.rootNode : ctx.nodes[idParent];
+	ctx.nodes[nodeId] = elem;
+	parentElem.insertBefore(elem, parentElem.childNodes[index] || null);
+}
+
+function textSet(ctx, nodeId, ptr) {
+	const text = ptrToPtrLenToString(ptr);
+
+	ctx.nodes[nodeId].nodeValue = text;
 }
 
 export default function diff(ctxId, ptr, len) {
-	console.log('diff ptr:', ptr, '; len:', len);
-
 	const ctx = contexts[ctxId];
 
 	for (let i = 0; i < len; i += 1) {
@@ -113,6 +92,14 @@ export default function diff(ctxId, ptr, len) {
 
 			case 5: // ParamRemoved
 				paramRemoved(ctx, nodeId, p + 8);
+				break;
+
+			case 6: // TextAdded
+				textAdded(ctx, nodeId, p + 8);
+				break;
+
+			case 7: // TextSet
+				textSet(ctx, nodeId, p + 8);
 				break;
 
 			default:

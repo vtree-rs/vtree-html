@@ -1,13 +1,12 @@
 import {utf8ToString} from './utils.js';
 
 export const idToTagName = [
-	'text', // 0
-	'div', // 1
-	'span', // 2
+	'div', // 0
+	'span', // 1
 ];
 
 export let lastCtxId = 0;
-export const contexts = {};
+export const contexts = [];
 
 export function createContext(nodeIdPtr, nodeIdLen) {
 	const nodeId = utf8ToString(nodeIdPtr, nodeIdLen);
@@ -15,14 +14,12 @@ export function createContext(nodeIdPtr, nodeIdLen) {
 	lastCtxId += 1;
 	contexts[ctxId] = {
 		rootNode: window.document.getElementById(nodeId),
-		nodes: {},
+		nodes: [],
 	};
 	return ctxId;
 }
 
 export function removeContext(ctxId) {
-	console.log(`remove_context: ${ctxId}`);
-
 	const ctx = contexts[ctxId];
 	const rootNode = ctx.rootNode;
 	while (rootNode.firstChild) {

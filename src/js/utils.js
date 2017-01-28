@@ -48,3 +48,9 @@ export function utf8ToString(ptr, len) {
 	}
 	return str;
 }
+
+export function ptrToPtrLenToString(ptr) {
+	const strPtr = getValue(ptr, '*');
+	const strLen = getValue(ptr + 4, 'i32');
+	return utf8ToString(strPtr, strLen);
+}
