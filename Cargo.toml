@@ -1,9 +1,9 @@
 [package]
 authors = ["Thomas Heck <t@b128.net>"]
-name = "vtree-html"
-version = "0.1.0"
+name = "vtree_html"
+version = "0.0.0"
 build = "build.rs"
 
 [dependencies]
-vtree = { path = "../vtree/vtree" }
+vtree = { path = "../vtree" }
 vtree_macros = { path = "../vtree/vtree_macros" }

@@ -18,9 +18,36 @@ function removed(ctx, nodeId, ptr) {
 	delete ctx.nodes[nodeId];
 }
 
-function reordered(ctx, nodeId, ptr) {
-	const lastIndex = getValue(ptr, 'i32');
-	const currIndex = getValue(ptr + 4, 'i32');
+function reordered(ctx, nodeId, ptrIn) {
+	const ptr = getValue(ptrIn, 'i32');
+	const len = getValue(ptrIn + 4, 'i32');
+
+	const elem = ctx.nodes[nodeId];
+	const children = [];
+	const childLen = elem.childNodes.length;
+	for (let i = 0; i < childLen; i += 1) {
+		children[i] = elem.childNodes[i];
+	}
+
+	let index = 0;
+	for (let i = 0; i < len; i += 1) {
+		const p = ptr + i * 8;
+		const currIndex = getValue(p, 'i32');
+		const lastIndex = getValue(p + 4, 'i32');
+
+		while (index < currIndex) {
+			elem.appendChild(children[index]);
+			index += 1;
+		}
+
+		elem.appendChild(children[lastIndex]);
+		index += 1;
+	}
+	while (index < childLen) {
+		elem.appendChild(children[index]);
+		index += 1;
+	}
+	_free(ptr);
 }
 
 function paramSet(ctx, nodeId, ptr) {

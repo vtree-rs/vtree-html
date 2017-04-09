@@ -11,12 +11,19 @@ extern "C" {
     fn vtree_html_diff(ctx_id: usize, diff: *const FFIDiff, len: usize);
 }
 
-#[repr(u32)]
-#[derive(Debug)]
-enum FFINodeType {
-    Div = 0,
-    Span = 1,
+macro_rules! gen_FFINodeType {
+    ($(($id:expr, $name_up:ident, $name_low:ident),)*) => {
+        #[repr(u32)]
+        #[derive(Debug)]
+        enum FFINodeType {
+            $(
+                $name_up = $id,
+            )*
+        }
+    };
 }
+
+html_nodes!(gen_FFINodeType);
 
 #[repr(u32)]
 enum FFIDiffTag {
@@ -53,9 +60,16 @@ struct FFIDiffAdded {
 }
 
 #[repr(C)]
-struct FFIDiffReordered {
-    last_index: usize,
+#[derive(Debug)]
+struct FFIReordered {
     curr_index: usize,
+    last_index: usize,
+}
+
+#[repr(C)]
+struct FFIDiffReordered {
+    ptr: *const FFIReordered,
+    len: usize,
 }
 
 #[repr(C)]
@@ -236,11 +250,18 @@ fn add_added_to_diffs(data: &mut DifferData, curr: &AllNodes, id: usize, path: &
         return;
     }
 
-    let (ty, params) = match curr {
-        &AllNodes::Div(nodes::Div { ref params, .. }) => (FFINodeType::Div, params),
-        &AllNodes::Span(nodes::Span { ref params, .. }) => (FFINodeType::Span, params),
-        &AllNodes::Text(_) | &AllNodes::Widget(_) => unreachable!(),
-    };
+    macro_rules! gen_add_match {
+        ($(($id:expr, $name_up:ident, $name_low:ident),)*) => {
+            match curr {
+                $(
+                    &AllNodes::$name_up(nodes::$name_up { ref params, .. }) =>
+                        (FFINodeType::$name_up, params),
+                )*
+                &AllNodes::Text(_) | &AllNodes::Widget(_) => unreachable!(),
+            }
+        };
+    }
+    let (ty, params) = html_nodes!(gen_add_match);
 
     data.diffs.push(FFIDiff {
         id: id,
@@ -256,61 +277,61 @@ fn add_added_to_diffs(data: &mut DifferData, curr: &AllNodes, id: usize, path: &
     data.diffs.extend(params_to_ffi(id, params, false));
 }
 
-impl<'a, 'b> diff::Differ<'a, AllNodes> for Differ<'b> {
-    fn diff(&'a self, path: &diff::Path, diff: diff::Diff<'a, AllNodes>) {
-        use self::diff::Diff;
-
-        println!("{:?}", diff);
-
+impl<'b> diff::Differ<AllNodes> for Differ<'b> {
+    fn diff_added(&self, path: &diff::Path, index: usize, curr: &AllNodes) {
         let mut data = self.data.borrow_mut();
+        curr.visit_enter(path, index, &mut |path, index, node| {
+            let id = data.create_id_for_path(path);
+            add_added_to_diffs(&mut *data, node, id, path, index);
+        });
+    }
 
-        match diff {
-            Diff::Added {index, curr} => {
-                curr.visit_enter(path, index, &mut |path, index, node| {
-                    let id = data.create_id_for_path(path);
-                    add_added_to_diffs(&mut *data, node, id, path, index);
-                });
-            }
-            Diff::Removed {ref last, ..} => {
-                last.visit_exit(path, 0, &mut |path, _, _| {
-                    let id = data.state.node_ids.remove(path).unwrap();
-                    data.diffs.push(FFIDiff {
-                        id: id,
-                        tag: FFIDiffTag::Removed,
-                        u: unsafe { ::std::mem::uninitialized() },
-                    });
-                });
-            }
-            Diff::Replaced {ref curr, ref last, index} => {
-                last.visit_exit(path, 0, &mut |path, _, _| {
-                    let id = data.state.node_ids.remove(path);
-                    let id = if let Some(id) = id {
-                        id
-                    } else {
-                        panic!("wtf path: {}", path);
-                    };
-                    data.diffs.push(FFIDiff {
-                        id: id,
-                        tag: FFIDiffTag::Removed,
-                        u: unsafe { ::std::mem::uninitialized() },
-                    });
-                });
+    fn diff_removed(&self, path: &diff::Path, _index: usize, last: &AllNodes) {
+        let mut data = self.data.borrow_mut();
+        last.visit_exit(path, 0, &mut |path, _, _| {
+            let id = data.state.node_ids.remove(path).unwrap();
+            data.diffs.push(FFIDiff {
+                id: id,
+                tag: FFIDiffTag::Removed,
+                u: unsafe { ::std::mem::uninitialized() },
+            });
+        });
+    }
 
-                curr.visit_enter(path, index, &mut |path, index, node| {
-                    let id = data.create_id_for_path(path);
-                    add_added_to_diffs(&mut *data, node, id, path, index);
-                });
-            }
-            Diff::ParamsChanged { curr, last } => {
+    fn diff_replaced(&self, path: &diff::Path, index: usize, curr: &AllNodes, last: &AllNodes) {
+        let mut data = self.data.borrow_mut();
+        last.visit_exit(path, 0, &mut |path, _, _| {
+            let id = data.state.node_ids.remove(path);
+            let id = if let Some(id) = id {
+                id
+            } else {
+                panic!("wtf path: {}", path);
+            };
+            data.diffs.push(FFIDiff {
+                id: id,
+                tag: FFIDiffTag::Removed,
+                u: unsafe { ::std::mem::uninitialized() },
+            });
+        });
+
+        curr.visit_enter(path, index, &mut |path, index, node| {
+            let id = data.create_id_for_path(path);
+            add_added_to_diffs(&mut *data, node, id, path, index);
+        });
+    }
+
+    fn diff_params_changed(&self, path: &diff::Path, curr: &AllNodes, last: &AllNodes) {
+        macro_rules! gen_params_changed {
+            ($(($id:expr, $name_up:ident, $name_low:ident),)*) => {
+
+                let mut data = self.data.borrow_mut();
                 match (curr, last) {
-                    (
-                        &AllNodes::Div(nodes::Div { params: nodes::Params{params: ref curr}, .. }),
-                        &AllNodes::Div(nodes::Div { params: nodes::Params{params: ref last}, .. }),
-                    ) |
-                    (
-                        &AllNodes::Span(nodes::Span { params: nodes::Params{params: ref curr}, .. }),
-                        &AllNodes::Span(nodes::Span { params: nodes::Params{params: ref last}, .. }),
-                    ) => {
+                    $(
+                        (
+                            &AllNodes::$name_up(nodes::$name_up { params: nodes::Params{params: ref curr}, .. }),
+                            &AllNodes::$name_up(nodes::$name_up { params: nodes::Params{params: ref last}, .. }),
+                        )
+                    )|* => {
                         let id = data.get_id_for_path(path);
                         for (key, val_curr) in curr.iter() {
                             if let Some(val_last) = last.get(key) {
@@ -349,25 +370,40 @@ impl<'a, 'b> diff::Differ<'a, AllNodes> for Differ<'b> {
                     }
                     _ => unreachable!(),
                 }
-            }
-            Diff::Reordered { indices } => {
-                let (path_parent, _) = path.split_at(path.len() - 1);
-                let id = data.get_id_for_path(&path_parent);
-                let it = indices.into_iter().map(|(last_index, curr_index)| {
-                    FFIDiff {
-                        id: id,
-                        tag: FFIDiffTag::Reordered,
-                        u: FFIDiffUnion {
-                            reordered: FFIDiffReordered {
-                                last_index: last_index,
-                                curr_index: curr_index,
-                            }
-                        },
-                    }
-                });
-                data.diffs.extend(it);
-            }
+            };
+        };
+
+        html_nodes!(gen_params_changed);
+    }
+
+    fn diff_reordered<I: Iterator<Item=(usize, usize)>>(&self, path: &diff::Path, indices: I) {
+        let mut ffi_reordered: Vec<_> = indices
+            .map(|(c_i, l_i)| {
+                FFIReordered {
+                    curr_index: c_i,
+                    last_index: l_i,
+                }
+            })
+            .collect();
+        if ffi_reordered.is_empty() {
+            return;
         }
+        let mut data = self.data.borrow_mut();
+        let (path_parent, _) = path.split_at(path.len() - 1);
+        let id = data.get_id_for_path(&path_parent);
+        ffi_reordered.sort_by_key(|e| e.curr_index);
+        println!("{:?}", ffi_reordered);
+        data.diffs.push(FFIDiff {
+            id: id,
+            tag: FFIDiffTag::Reordered,
+            u: FFIDiffUnion {
+                reordered: FFIDiffReordered {
+                    ptr: ffi_reordered.as_ptr(),
+                    len: ffi_reordered.len(),
+                }
+            },
+        });
+        ::std::mem::forget(ffi_reordered);
     }
 }
 
@@ -393,20 +429,17 @@ pub struct Context {
 }
 
 impl Context {
-    pub fn new(node_id: &str, curr: AllNodes) -> Context {
+    pub fn new(node_id: &str, mut curr: AllNodes) -> Context {
         let ctx_id = unsafe {
             vtree_html_create_context(node_id.as_ptr(), node_id.len())
         };
         let diff_ctx = diff::Context::new();
         let path = diff::Path::new();
-        let curr = curr.expand_widgets(None, &path);
+        AllNodes::expand_widgets(&mut curr, None, &path);
         let mut node_states = NodeStates::new();
         let diffs = {
             let differ = Differ::new(&mut node_states);
-            diff::Differ::diff(&differ, &path, diff::Diff::Added {
-                index: 0,
-                curr: &curr,
-            });
+            diff::Differ::diff_added(&differ, &path, 0, &curr);
             differ.into_diffs()
         };
         unsafe {
@@ -420,9 +453,9 @@ impl Context {
         }
     }
 
-    pub fn update(&mut self, curr: AllNodes) {
+    pub fn update(&mut self, mut curr: AllNodes) {
         let path = diff::Path::new();
-        let curr = curr.expand_widgets(Some(&self.last), &path);
+        AllNodes::expand_widgets(&mut curr, None, &path);
         let differ = Differ::new(&mut self.node_states);
         nodes::AllNodes::diff(&curr, &self.last, &path, 0, &self.diff_ctx, &differ);
         let diffs = differ.into_diffs();
