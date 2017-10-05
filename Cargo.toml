@@ -1,9 +1,14 @@
 [package]
 authors = ["Thomas Heck <t@b128.net>"]
+build = "build.rs"
 name = "vtree_html"
 version = "0.0.0"
-build = "build.rs"
 
 [dependencies]
-vtree = { path = "../vtree" }
-vtree_macros = { path = "../vtree/vtree_macros" }
+stdweb = "0.1.2"
+
+[dependencies.vtree]
+path = "../vtree"
+
+[dependencies.vtree_macros]
+path = "../vtree/vtree_macros"

@@ -3,159 +3,22 @@ use std::collections::HashMap;
 use std::fmt;
 use nodes::{self, AllNodes};
 use vtree::diff;
+use stdweb::web;
 
-#[link(name="vtree_html")]
-extern "C" {
-    fn vtree_html_create_context(node_id: *const u8, node_id_len: usize) -> usize;
-    fn vtree_html_remove_context(ctx_id: usize);
-    fn vtree_html_diff(ctx_id: usize, diff: *const FFIDiff, len: usize);
-}
-
-macro_rules! gen_FFINodeType {
-    ($(($id:expr, $name_up:ident, $name_low:ident),)*) => {
-        #[repr(u32)]
-        #[derive(Debug)]
-        enum FFINodeType {
-            $(
-                $name_up = $id,
-            )*
-        }
-    };
-}
-
-html_nodes!(gen_FFINodeType);
-
-#[repr(u32)]
-enum FFIDiffTag {
-    Added = 0,
-    Removed = 1,
-    Reordered = 2,
-    ParamSet = 3,
-    ParamSetToTrue = 4,
-    ParamRemoved = 5,
-    TextAdded = 6,
-    TextSet = 7,
-}
-
-#[repr(C)]
-struct FFIString {
-    ptr: *const u8,
-    len: usize,
-}
-
-impl FFIString {
-    fn new(s: &str) -> FFIString {
-        FFIString {
-            ptr: s.as_ptr(),
-            len: s.len(),
-        }
-    }
-}
-
-#[repr(C)]
-struct FFIDiffAdded {
-    id_parent: usize,
-    ty: FFINodeType,
-    index: usize,
-}
-
-#[repr(C)]
 #[derive(Debug)]
-struct FFIReordered {
-    curr_index: usize,
-    last_index: usize,
-}
-
-#[repr(C)]
-struct FFIDiffReordered {
-    ptr: *const FFIReordered,
-    len: usize,
-}
-
-#[repr(C)]
-struct FFIDiffParamSet {
-    key: FFIString,
-    value: FFIString,
-}
-
-#[repr(C)]
-struct FFIDiffTextAdded {
-    id_parent: usize,
-    index: usize,
-    text: FFIString,
-}
-
-#[repr(C)]
-union FFIDiffUnion {
-    added: FFIDiffAdded,
-    reordered: FFIDiffReordered,
-    param_set: FFIDiffParamSet,
-    param_set_to_true: FFIString,
-    param_removed: FFIString,
-    text_added: FFIDiffTextAdded,
-    text_set: FFIString,
-}
-
-#[repr(C)]
-struct FFIDiff {
-    id: usize,
-    tag: FFIDiffTag,
-    u: FFIDiffUnion,
-}
-
-struct DifferData<'a> {
-    state: &'a mut NodeStates,
-    diffs: Vec<FFIDiff>,
-}
-
-impl<'a> DifferData<'a> {
-    fn new(state: &'a mut NodeStates) -> DifferData<'a> {
-        DifferData {
-            state: state,
-            diffs: Vec::new(),
-        }
-    }
-
-    fn get_next_id(&mut self) -> usize {
-        // TODO: fix id overflow
-        let id = self.state.next_node_id;
-        self.state.next_node_id += 1;
-        id
-    }
-
-    fn get_id_for_path(&self, path: &diff::Path) -> usize {
-        match self.state.node_ids.get(path) {
-            Some(id) => *id,
-            None => panic!("couldn't find id for path `{}`", path),
-        }
-    }
-
-    fn create_id_for_path(&mut self, path: &diff::Path) -> usize {
-        let id = self.get_next_id();
-        self.state.node_ids.insert(path.clone(), id);
-        id
-    }
-}
-
 pub struct Differ<'a> {
-    data: RefCell<DifferData<'a>>,
+    nodes: &'a mut HashMap<diff::Path, web::Node>,
 }
 
 impl <'a> Differ<'a> {
-    fn new(state: &'a mut NodeStates) -> Differ<'a> {
+    fn new(nodes: &'a mut HashMap<diff::Path, web::Node>) -> Differ<'a> {
         Differ {
-            data: RefCell::new(DifferData::new(state)),
+            nodes: nodes,
         }
     }
 
-    fn into_diffs(self) -> Vec<FFIDiff> {
-        self.data.into_inner().diffs
-    }
-}
-
-impl <'a> fmt::Debug for Differ<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Debug is unimplemented for Differ")
+    fn get_node(&self, path: &diff::Path) -> Option<web::Node> {
+        self.nodes.get(path)
     }
 }
 
@@ -407,22 +270,7 @@ impl<'b> diff::Differ<AllNodes> for Differ<'b> {
     }
 }
 
-struct NodeStates {
-    node_ids: HashMap<diff::Path, usize>,
-    next_node_id: usize,
-}
-
-impl NodeStates {
-    fn new() -> NodeStates {
-        NodeStates {
-            node_ids: HashMap::new(),
-            next_node_id: 1,
-        }
-    }
-}
-
 pub struct Context {
-    ctx_id: usize,
     last: AllNodes,
     diff_ctx: diff::Context<AllNodes>,
     node_states: NodeStates,
@@ -430,23 +278,12 @@ pub struct Context {
 
 impl Context {
     pub fn new(node_id: &str, mut curr: AllNodes) -> Context {
-        let ctx_id = unsafe {
-            vtree_html_create_context(node_id.as_ptr(), node_id.len())
-        };
         let diff_ctx = diff::Context::new();
         let path = diff::Path::new();
         AllNodes::expand_widgets(&mut curr, None, &path);
         let mut node_states = NodeStates::new();
-        let diffs = {
-            let differ = Differ::new(&mut node_states);
-            diff::Differ::diff_added(&differ, &path, 0, &curr);
-            differ.into_diffs()
-        };
-        unsafe {
-            vtree_html_diff(ctx_id, diffs.as_ptr(), diffs.len());
-        }
+        Differ::new(&mut node_states).diff_added(&path, 0, &curr);
         Context {
-            ctx_id: ctx_id,
             diff_ctx: diff_ctx,
             last: curr,
             node_states: node_states,
@@ -456,20 +293,7 @@ impl Context {
     pub fn update(&mut self, mut curr: AllNodes) {
         let path = diff::Path::new();
         AllNodes::expand_widgets(&mut curr, None, &path);
-        let differ = Differ::new(&mut self.node_states);
-        nodes::AllNodes::diff(&curr, &self.last, &path, 0, &self.diff_ctx, &differ);
-        let diffs = differ.into_diffs();
-        unsafe {
-            vtree_html_diff(self.ctx_id, diffs.as_ptr(), diffs.len());
-        }
+        nodes::AllNodes::diff(&curr, &self.last, &path, 0, &self.diff_ctx, &Differ::new(&mut self.node_states));
         self.last = curr;
-    }
-}
-
-impl Drop for Context {
-    fn drop(&mut self) {
-        unsafe {
-            vtree_html_remove_context(self.ctx_id);
-        }
     }
 }

@@ -5,6 +5,7 @@
 
 extern crate vtree;
 extern crate vtree_macros;
+extern crate stdweb;
 
 #[macro_use]
 pub mod nodes;
